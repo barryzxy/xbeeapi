@@ -1,8 +1,17 @@
-package xbee
+package xbeeapi
+/* XBEE API Mode Library
+ * http://github.com/coreyshuman/xbeeapi
+ * (C) 2016 Corey Shuman
+ * 5/26/16
+ *
+ * License: MIT
+ */
 
 import (
-	"github.com/coreyshuman/picontrol/serial"
+	"github.com/coreyshuman/serial"
+	"github.com/coreyshuman/srbuf"
 	"time"
+	"fmt"
 	"bufio"
 	"bytes"
 	"errors"
@@ -22,25 +31,27 @@ type RxHandler struct {
 var rxHandlerList *list.List
 quit := make(chan bool)
 
-// https://golang.org/pkg/strings/
-/*
-var rxBuff string
-var txBuff string
-var rxReader *String.Reader
-var txReader *String.Reader
-*/
-var rxBuffer bytes.Buffer
-var txBuffer bytes.Buffer
+var txBuf srbuf.SimpleRingBuff
+var rxBuf srbuf.SimpleRingBuff
+
+var serialXBEE int = -1
+var err error
 
 ////////////////////
 
 
-func Init() {
-	// rxReader = string.NewReader(rxBuff);
-	// txReader = string.NewReader(txBuff);
+func Init(dev string, baud int, timeout int) {	
+	txBuf = srbuf.Create(256)
+	rxBuf = srbuf.Create(256)
+	// initialize a serial interface to the xbee module
+	serialXBEE, err = serial.Connect(dev, baud, timeout)
 }
 
 func Begin() {
+	if serialXBEE == -1 {
+		return
+	}
+	
 	go func() {
 		for {
 			select {
@@ -51,6 +62,7 @@ func Begin() {
 			}
 		}
 		// if we get here, dispose and exit
+		serial.Disconnect(serialXBEE)
 	}
 }
 
@@ -60,19 +72,33 @@ func End() {
 
 func processRxData()
 {
-	// use rxReader to parse out data
+	// use rxBuf to parse out data
 }
 
 func processTxData()
 {
 	// send data out of serial (XBEE) port
+	if txBuf.AvailableByteCount() > 0 {
+		data := txBuf.GetBytes()
+		serial.SendBytes(serialXBEE, data)
+	}
 }
 
-func SendPacket(string address, string data) {
+func SendPacket(address byte[], data byte[], length int) {
 	
 	// do a bunch of stuff
 	
-	txBuffer.WriteByte(byte('c'))
+	err := txBuffer.WriteByte(byte('c'))
+	if err != nil {
+		fmt.Print(err)
+	}
 }
+
+func CalcChecksum()
+{
+
+}
+
+
 
 
