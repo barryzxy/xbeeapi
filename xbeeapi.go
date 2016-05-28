@@ -11,7 +11,7 @@ import (
 	"github.com/coreyshuman/serial"
 	"github.com/coreyshuman/srbuf"
 	//"time"
-	"fmt"
+	//"fmt"
 	//"bufio"
 	//"bytes"
 	"errors"
@@ -91,6 +91,7 @@ func processTxData()
 }
 
 /* ***************************************************************
+ * SendPacket
  * Send data packet as an RF packet to the specified destination
  *
  * 0		- Start Delimiter
@@ -105,7 +106,7 @@ func processTxData()
  * n+1		- checksum
  * ***************************************************************/
 func SendPacket(address64 []byte, address16 []byte, option byte, data []byte) (d []byte, n int, err error) {
-	d = []byte{0x7E, 0x00, 0x00, 0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	d = []byte{0x7E, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 				0xFF, 0xFE, 0x00, 0x00}
 	
 	
@@ -130,7 +131,43 @@ func SendPacket(address64 []byte, address16 []byte, option byte, data []byte) (d
 	d[2] = byte((n-4) % 0x100)
 	
 	d[n-1] = CalcChecksum(d[3:])
-	fmt.Println(string(d))
+
+	return
+}
+
+/* ***************************************************************
+ * SendATCommand
+ * Send AT command to the local device and apply changes immediately
+ *
+ * 0		- Start Delimiter
+ * 1-2		- Length
+ * 3		- Frame Type (0x08)
+ * 4		- Frame ID 
+ * 5 - 6	- AT command
+ * 			- optional parameter
+ * 7		- checksum
+ * ***************************************************************/
+func SendATCommand(command []byte, param []byte) (d []byte, n int, err error) {
+	d = []byte{0x7E, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00}
+	
+	
+	if len(command) != 2 {
+		return d, 0, errors.New("Incorrect AT Command Length")
+	}
+	
+	d[5] = command[0]
+	d[6] = command[1]
+	
+	// copy param if exists
+	d = append(d[:], param...)
+	d = append(d[:], 0x00)
+	
+	n = len(d)
+	d[1] = byte((n-4) / 0x100)
+	d[2] = byte((n-4) % 0x100)
+	
+	d[n-1] = CalcChecksum(d[3:])
+
 	return
 }
 
