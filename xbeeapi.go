@@ -11,21 +11,22 @@ import (
 	"github.com/coreyshuman/serial"
 	"github.com/coreyshuman/srbuf"
 	//"time"
-	//"fmt"
+	"fmt"
 	//"bufio"
 	//"bytes"
 	"errors"
 	"container/list"
+	"encoding/hex"
 )
 
 // receive handler signature
-type RxHandlerFunc func(string)
+type RxHandlerFunc func([]byte)
 
 // rx handler struct
 type RxHandler struct {
-	id int
 	name string
-	// RxHandlerFunc func
+	frameType byte
+	handlerFunc func([]byte)
 }
 
 var rxHandlerList *list.List
@@ -34,21 +35,24 @@ var quit chan bool
 var txBuf *srbuf.SimpleRingBuff
 var rxBuf *srbuf.SimpleRingBuff
 
+var errHandler func(error) = nil
 var serialXBEE int = -1
 var err error
 
 ////////////////////
 
 
-func Init(dev string, baud int, timeout int) {	
+func Init(dev string, baud int, timeout int) (int, error) {	
 	txBuf = srbuf.Create(256)
 	rxBuf = srbuf.Create(256)
 	// initialize a serial interface to the xbee module
 	serialXBEE, err = serial.Connect(dev, baud, timeout)
 	quit = make(chan bool)
+	rxHandlerList = list.New()
+	return serialXBEE, err
 }
 
-/*
+
 func Begin() {
 	if serialXBEE == -1 {
 		return
@@ -60,32 +64,92 @@ func Begin() {
 			case <- quit:
 				return
 			default:
-				return // cts debug
+				processRxData()
+				processTxData()
 			}
 		}
 		// if we get here, dispose and exit
 		serial.Disconnect(serialXBEE)
 	}()
 }
-*/
-/*
+
+
 func End() {
 	quit <- true
 }
 
-func processRxData()
-{
-	if true {
-	
-	}
-	// use rxBuf to parse out data
+// cts todo - avoid repeat for same framdId
+func AddHandler(frameType byte, f func([]byte)) {
+	var handler RxHandler
+	handler.name = "test"
+	handler.frameType = frameType
+	handler.handlerFunc = f
+	rxHandlerList.PushBack(handler)
 }
 
-func processTxData()
-{
+func findHandler(frameType byte) RxHandlerFunc {
+	for e := rxHandlerList.Front(); e != nil; e = e.Next() {
+		if e.Value.(RxHandler).frameType == frameType {
+			return e.Value.(RxHandler).handlerFunc
+		}
+	}
+	return nil
+}
+
+func SetupErrorHandler(f func(error)) {
+	errHandler = f
+}
+
+func processRxData() {
+	var ret bool = false
+	var frameId byte
+	var err error
+	for !ret {
+		avail := rxBuf.AvailByteCnt()
+		if(avail < 8) { // 8 bytes is minimum for complete packet
+			break
+		}
+		p := rxBuf.PeekBytes(3)
+		if(p[0] != 0x7E) {
+			rxBuf.GetByte() // skip byte, increment buffer
+			continue
+		}
+		n := int(p[1])*256 + int(p[2])
+		if(avail < n+4) { // not all data received yet, break for now
+			break
+		}
+		ret = true
+		// if we get here, packet is ready to parse
+		data := rxBuf.GetBytes(n+4)
+		switch(data[3]) { // Frame Type
+			case 0x88 : // at command response
+				frameId, data, err = ParseATCommandResponse(data)
+				break
+				
+			default:
+				err = errors.New("Frame Type not supported: [" + hex.Dump(data[3:4]) + "]")
+				break
+		}
+		if(err != nil) {
+			if(errHandler != nil) {
+				errHandler(err)
+			}
+			return
+		}
+		// fire callback
+		handler := findHandler(frameId) 
+		if(handler != nil) {
+			handler(data)
+		} else {
+			fmt.Println("No Handler")
+		}
+	}
+}
+
+func processTxData() {
 	// send data out of serial (XBEE) port
-	if txBuf.AvailableByteCount() > 0 {
-		data := txBuf.GetBytes()
+	if txBuf.AvailByteCnt() > 0 {
+		data := txBuf.GetBytes(0)
 		serial.SendBytes(serialXBEE, data)
 	}
 }
@@ -179,6 +243,48 @@ func CalcChecksum(data []byte)(byte) {
 		cs += data[i]
 	}
 	return 0xFF - cs
+}
+
+
+/* ***************************************************************
+ * ParseATCommandResponse
+ * Parse an AT Command response from XBEE
+ *
+ * 0		- Start Delimiter
+ * 1-2		- Length
+ * 3		- Frame Type (0x88)
+ * 4		- Frame ID 
+ * 5 - 6	- AT command
+ * 			- optional command data
+ * 7		- checksum
+ * ***************************************************************/
+func ParseATCommandResponse(r []byte) (frameId byte, data []byte, err error) {
+	err = nil
+	if(r[3] != 0x88) {
+		return 0, nil, errors.New("Invalid Frame Type") 
+	}
+	
+	n := int(r[1])*256 + int(r[2])
+	
+	if(n != len(r) - 4) {
+		return 0, nil, errors.New("Frame Length Error: " + fmt.Sprintf("%d, %d", n, len(r)-4)) 
+	}
+	
+	check := CalcChecksum(r[3:n+3])
+	if(check != r[n+3]) {
+		return 0, nil, errors.New(fmt.Sprintf( "Checksum Error: calc=[%02X] read=[%02X]", check, r[n+3] ) )
+	}
+	
+	// prepare return data
+	frameId = r[3]
+
+	if(n > 5) {
+		data = r[8:3+n] // 8:8+n-5
+	} else {
+		data = nil
+	}
+	
+	return
 }
 
 
