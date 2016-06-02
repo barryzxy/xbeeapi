@@ -39,6 +39,8 @@ var errHandler func(error) = nil
 var serialXBEE int = -1
 var err error
 
+var _frameId int = 1
+
 ////////////////////
 
 
@@ -46,6 +48,7 @@ func Init(dev string, baud int, timeout int) (int, error) {
 	txBuf = srbuf.Create(256)
 	rxBuf = srbuf.Create(256)
 	// initialize a serial interface to the xbee module
+	serial.Init()
 	serialXBEE, err = serial.Connect(dev, baud, timeout)
 	quit = make(chan bool)
 	rxHandlerList = list.New()
@@ -104,6 +107,20 @@ func processRxData() {
 	var ret bool = false
 	var frameId byte
 	var err error
+	var d []byte
+	var n int
+	
+	d = make([]byte, 256)
+	n,err = serial.ReadBytes(serialXBEE, d)
+	// cts todo - improve this
+	if err == nil && n > 0 {
+		
+		for i:=0; i<n; i++ {
+			rxBuf.PutByte(d[i])
+			fmt.Println(fmt.Sprintf("Read:[%02X]", d[i]))
+		}
+	}
+	
 	for !ret {
 		avail := rxBuf.AvailByteCnt()
 		if(avail < 8) { // 8 bytes is minimum for complete packet
@@ -195,6 +212,11 @@ func SendPacket(address64 []byte, address16 []byte, option byte, data []byte) (d
 	d[2] = byte((n-4) % 0x100)
 	
 	d[n-1] = CalcChecksum(d[3:])
+	
+	// cts todo - improve this
+	for i := 0; i<len(d); i++ {
+		txBuf.PutByte(d[i])
+	}
 
 	return
 }
@@ -219,6 +241,8 @@ func SendATCommand(command []byte, param []byte) (d []byte, n int, err error) {
 		return d, 0, errors.New("Incorrect AT Command Length")
 	}
 	
+	d[4] = byte(_frameId)
+	_frameId ++ // cts todo - make this better
 	d[5] = command[0]
 	d[6] = command[1]
 	
@@ -231,6 +255,11 @@ func SendATCommand(command []byte, param []byte) (d []byte, n int, err error) {
 	d[2] = byte((n-4) % 0x100)
 	
 	d[n-1] = CalcChecksum(d[3:])
+	
+	// cts todo - improve this
+	for i := 0; i<len(d); i++ {
+		txBuf.PutByte(d[i])
+	}
 
 	return
 }
