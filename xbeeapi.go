@@ -267,8 +267,8 @@ func SendATCommand(command []byte, param []byte) (d []byte, n int, err error) {
 func CalcChecksum(data []byte)(byte) {
 	n := len(data)
 	var cs byte = 0
-	
-	for i := 0; i < n-1; i++ {
+
+	for i := 0; i < n; i++ {
 		cs += data[i]
 	}
 	return 0xFF - cs
