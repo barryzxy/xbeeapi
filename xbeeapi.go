@@ -40,6 +40,7 @@ var serialXBEE int = -1
 var err error
 
 var _frameId int = 1
+var _running bool = false
 
 ////////////////////
 
@@ -61,11 +62,12 @@ func Begin() {
 		return
 	}
 	
+	_running = true
 	go func() {
 		for {
 			select {
 			case <- quit:
-				return
+				break
 			default:
 				processRxData()
 				processTxData()
@@ -78,6 +80,9 @@ func Begin() {
 
 
 func End() {
+	if !_running && serialXBEE != -1 {
+		serial.Disconnect(serialXBEE)
+	}
 	quit <- true
 }
 
