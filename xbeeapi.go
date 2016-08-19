@@ -122,7 +122,7 @@ func processRxData() {
 		
 		for i:=0; i<n; i++ {
 			rxBuf.PutByte(d[i])
-			fmt.Println(fmt.Sprintf("Read:[%02X]", d[i]))
+			//fmt.Println(fmt.Sprintf("Read:[%02X]", d[i]))
 		}
 	}
 	
