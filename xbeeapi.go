@@ -15,7 +15,6 @@ import (
 	//"bufio"
 	//"bytes"
 	"errors"
-	"container/list"
 	"encoding/hex"
 )
 
@@ -28,17 +27,19 @@ const RECEIVE		= 0x90
 const EXPLICITRX	= 0x91
 
 
-// receive handler signature
-type RxHandlerFunc func([]byte)
 
-// rx handler struct
-type RxHandler struct {
-	name string
-	frameType byte
-	handlerFunc func([]byte)
-}
+// user defined callback functions declarations
+type ATCommandCallbackFunc func(frameId byte, data []byte)
+type ModemStatusCallbackFunc func(status byte)
+type ReceivePacketCallbackFunc func(destinationAddress64 [8]byte, destinationAddress16 [2]byte, receiveOptions byte, receivedData []byte)
 
-var rxHandlerList *list.List
+
+// user defined callback functions
+var atCommandCallback ATCommandCallbackFunc = nil
+var modemStatusCallback ModemStatusCallbackFunc = nil
+var receivePacketCallback ReceivePacketCallbackFunc = nil
+
+
 var quit chan bool 
 
 var txBuf *srbuf.SimpleRingBuff
@@ -61,7 +62,7 @@ func Init(dev string, baud int, timeout int) (int, error) {
 	serial.Init()
 	serialXBEE, err = serial.Connect(dev, baud, timeout)
 	quit = make(chan bool)
-	rxHandlerList = list.New()
+
 	return serialXBEE, err
 }
 
@@ -87,34 +88,29 @@ func Begin() {
 	}()
 }
 
-
-func End() {
+func Close() {
 	if !_running && serialXBEE != -1 {
 		serial.Disconnect(serialXBEE)
 	}
 	quit <- true
 }
 
-// cts todo - avoid repeat for same framdId
-func AddHandler(frameType byte, f func([]byte)) {
-	var handler RxHandler
-	handler.name = "test"
-	handler.frameType = frameType
-	handler.handlerFunc = f
-	rxHandlerList.PushBack(handler)
-}
-
-func findHandler(frameType byte) RxHandlerFunc {
-	for e := rxHandlerList.Front(); e != nil; e = e.Next() {
-		if e.Value.(RxHandler).frameType == frameType {
-			return e.Value.(RxHandler).handlerFunc
-		}
-	}
-	return nil
-}
+// Setup for user-defined callback functions
 
 func SetupErrorHandler(f func(error)) {
 	errHandler = f
+}
+
+func SetupATCommandCallback(f ATCommandCallbackFunc) {
+	atCommandCallback = f
+}
+
+func SetupModemStatusCallback(f ModemStatusCallbackFunc) {
+	modemStatusCallback = f
+}
+
+func SetupReceivePacketCallback(f ReceivePacketCallbackFunc) {
+	receivePacketCallback = f
 }
 
 func processRxData() {
@@ -122,6 +118,9 @@ func processRxData() {
 	var frameType byte
 	var frameId byte
 	var status byte
+	var destinationAddress64 [8]byte
+	var destinationAddress16 [2]byte
+	var receiveOptions byte
 	var err error
 	var d []byte
 	var n int
@@ -155,32 +154,38 @@ func processRxData() {
 		// if we get here, packet is ready to parse
 		data := rxBuf.GetBytes(n+4)
 		frameType = data[3]
+		// parse api packet
 		switch frameType { // Frame Type
 			case ATRESPONSE : 
-				frameId, data, err = ParseATCommandResponse(data)
-				frameId = frameId
+				frameId, data, err = parseATCommandResponse(data)
 			case MODEMSTATUS : 
-				status, err = ParseModemStatusResponse(data)
-				if err == nil {
-					data = []byte(GetModemStatusDescription(status))
-				}	
-			case TXSTATUS : 
-				_, _, _, data, err = ParseReceivePacketResponse(data)
+				status, err = parseModemStatusResponse(data)
+			case RECEIVE : 
+				destinationAddress64, destinationAddress16, receiveOptions, data, err = parseReceivePacketResponse(data)
 			default:
 				err = errors.New("Frame Type not supported: [" + hex.Dump(data[3:4]) + "]")
 		}
+		// error handling
 		if(err != nil) {
 			if(errHandler != nil) {
 				errHandler(err)
 			}
 			return
 		}
-		// fire callback
-		handler := findHandler(frameType) 
-		if(handler != nil) {
-			handler(data)
-		} else {
-			fmt.Println("No Handler")
+		// send parsed data to user callbacks
+		switch frameType { // Frame Type
+			case ATRESPONSE : 
+				if atCommandCallback != nil {
+					atCommandCallback(frameId, data)
+				}
+			case MODEMSTATUS : 
+				if modemStatusCallback != nil {
+					modemStatusCallback(status)
+				}
+			case RECEIVE : 
+				if receivePacketCallback != nil {
+					receivePacketCallback(destinationAddress64, destinationAddress16, receiveOptions, data)
+				}
 		}
 	}
 }
@@ -209,7 +214,7 @@ func processTxData() {
  * n+1		- checksum
  * ***************************************************************/
 func SendPacket(address64 []byte, address16 []byte, option byte, data []byte) (d []byte, n int, err error) {
-	d = []byte{0x7E, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	d = []byte{0x7E, 0x00, 0x00, TRANSMIT, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 				0xFF, 0xFE, 0x00, 0x00}
 	
 	
@@ -256,7 +261,7 @@ func SendPacket(address64 []byte, address16 []byte, option byte, data []byte) (d
  * 7		- checksum
  * ***************************************************************/
 func SendATCommand(command []byte, param []byte) (d []byte, n int, err error) {
-	d = []byte{0x7E, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00}
+	d = []byte{0x7E, 0x00, 0x00, ATCOMMAND, 0x00, 0x00, 0x00}
 	
 	
 	if len(command) != 2 {
@@ -309,9 +314,9 @@ func CalcChecksum(data []byte)(byte) {
  * 			- optional command data
  * 7		- checksum
  * ***************************************************************/
-func ParseATCommandResponse(r []byte) (frameId byte, data []byte, err error) {
+func parseATCommandResponse(r []byte) (frameId byte, data []byte, err error) {
 	err = nil
-	if(r[3] != 0x88) {
+	if(r[3] != ATRESPONSE) {
 		return 0, nil, errors.New("Invalid Frame Type") 
 	}
 	
@@ -348,10 +353,10 @@ func ParseATCommandResponse(r []byte) (frameId byte, data []byte, err error) {
  * 4		- Status
  * 5		- checksum
  * ***************************************************************/
-func ParseModemStatusResponse(r []byte) (status byte, err error) {
+func parseModemStatusResponse(r []byte) (status byte, err error) {
 	status = 0
 	err = nil
-	if(r[3] != 0x8A) {
+	if(r[3] != MODEMSTATUS) {
 		err = errors.New("Invalid Frame Type") 
 		return
 	}
@@ -422,14 +427,14 @@ func GetModemStatusDescription(status byte) (description string) {
  * 9		- Discovery Status
  * 10		- checksum
  * ***************************************************************/
-func ParseTransmitStatusResponse(r []byte) (frameId byte, destinationAddress [2]byte, retryCount byte, deliveryStatus byte, discoveryStatus byte, err error) {
+func parseTransmitStatusResponse(r []byte) (frameId byte, destinationAddress [2]byte, retryCount byte, deliveryStatus byte, discoveryStatus byte, err error) {
 	frameId = 0
 	retryCount = 0
 	deliveryStatus = 0
 	discoveryStatus = 0
 	err = nil
 	
-	if(r[3] != 0x8B) {
+	if(r[3] != TXSTATUS) {
 		err = errors.New("Invalid Frame Type") 
 		return
 	}
@@ -546,11 +551,11 @@ func GetDiscoveryStatusDescription(status byte) (description string) {
  * 15 - n	- Received data
  * n+1		- checksum
  * ***************************************************************/
-func ParseReceivePacketResponse(r []byte) (destinationAddress64 [8]byte, destinationAddress16 [2]byte, receiveOptions byte, receivedData []byte, err error) {
+func parseReceivePacketResponse(r []byte) (destinationAddress64 [8]byte, destinationAddress16 [2]byte, receiveOptions byte, receivedData []byte, err error) {
 	receiveOptions = 0
 	err = nil
 	
-	if(r[3] != 0x90) {
+	if(r[3] != RECEIVE) {
 		err = errors.New("Invalid Frame Type") 
 		return
 	}
@@ -642,7 +647,7 @@ func GetReceiveOptionDescription(status byte) (description string) {
  * 21 - n	- Received data
  * n+1		- checksum
  * ***************************************************************/
-func ParseExplicitReceivePacketResponse(r []byte) (destinationAddress64 [8]byte, destinationAddress16 [2]byte,
+func parseExplicitReceivePacketResponse(r []byte) (destinationAddress64 [8]byte, destinationAddress16 [2]byte,
 													sourceEndpoint byte, destinationEndpoint byte,
 													clusterId [2]byte, profileId [2]byte,
 													receiveOptions byte, receivedData []byte, err error) {
@@ -652,7 +657,7 @@ func ParseExplicitReceivePacketResponse(r []byte) (destinationAddress64 [8]byte,
 	receivedData = nil
 	err = nil
 	
-	if(r[3] != 0x91) {
+	if(r[3] != EXPLICITRX) {
 		err = errors.New("Invalid Frame Type") 
 		return
 	}
