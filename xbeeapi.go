@@ -26,7 +26,8 @@ const TXSTATUS		= 0x8B
 const RECEIVE		= 0x90
 const EXPLICITRX	= 0x91
 
-
+// extra debug output
+var debug = true
 
 // user defined callback functions declarations
 type ATCommandCallbackFunc func(frameId byte, data []byte)
@@ -155,6 +156,9 @@ func processRxData() {
 		data := rxBuf.GetBytes(n+4)
 		frameType = data[3]
 		// parse api packet
+		if debug {
+			fmt.Println(fmt.Sprintf( "Rx frame=[%02X]", frameType))
+		}
 		switch frameType { // Frame Type
 			case ATRESPONSE : 
 				frameId, data, err = parseATCommandResponse(data)
@@ -195,6 +199,9 @@ func processTxData() {
 	if txBuf.AvailByteCnt() > 0 {
 		data := txBuf.GetBytes(0)
 		serial.SendBytes(serialXBEE, data)
+		if debug {
+			fmt.Println(fmt.Sprintf( "Tx cnt=(%d)", len(data)))
+		}
 	}
 }
 
