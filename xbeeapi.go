@@ -10,7 +10,7 @@ package xbeeapi
 import (
 	"github.com/coreyshuman/serial"
 	"github.com/coreyshuman/srbuf"
-	//"time"
+	"time"
 	"fmt"
 	//"bufio"
 	//"bytes"
@@ -61,7 +61,8 @@ func Init(dev string, baud int, timeout int) (int, error) {
 	rxBuf = srbuf.Create(256)
 	// initialize a serial interface to the xbee module
 	serial.Init()
-	serialXBEE, err = serial.Connect(dev, baud, timeout)
+	serialXBEE, err = serial.Connect(dev, baud, timeout, true)
+	
 	quit = make(chan bool)
 
 	return serialXBEE, err
@@ -82,6 +83,7 @@ func Begin() {
 			default:
 				processRxData()
 				processTxData()
+				time.Sleep(time.Millisecond*15)
 			}
 		}
 		// if we get here, dispose and exit
@@ -128,6 +130,7 @@ func processRxData() {
 	
 	d = make([]byte, 256)
 	n,err = serial.ReadBytes(serialXBEE, d)
+
 	// cts todo - improve this
 	if err == nil && n > 0 {
 		
