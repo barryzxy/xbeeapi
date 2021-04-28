@@ -1,25 +1,24 @@
 package xbeeapi
 /* XBEE API Mode Library
  * http://github.com/coreyshuman/xbeeapi
- * (C) 2016 Corey Shuman
+ * (C) 2021
  * 5/26/16
  *
  * License: MIT
  */
 
 import (
-	"github.com/coreyshuman/serial"
-	"github.com/coreyshuman/srbuf"
-	"time"
-	"fmt"
-	//"bufio"
-	//"bytes"
-	"errors"
 	"encoding/hex"
+	"errors"
+	"fmt"
+
+	"github.com/coreyshuman/serial"
 )
 
+
 const ATCOMMAND		= 0x08
-const TRANSMIT		= 0x10
+const TRANSMIT11	= 0x11
+const TRANSMIT10	= 0x10
 const ATRESPONSE	= 0x88
 const MODEMSTATUS	= 0x8A
 const TXSTATUS		= 0x8B
@@ -43,8 +42,7 @@ var receivePacketCallback ReceivePacketCallbackFunc = nil
 
 var quit chan bool 
 
-var txBuf *srbuf.SimpleRingBuff
-var rxBuf *srbuf.SimpleRingBuff
+
 
 var errHandler func(error) = nil
 var serialXBEE int = -1
@@ -54,49 +52,6 @@ var _frameId int = 1
 var _running bool = false
 
 ////////////////////
-
-
-func Init(dev string, baud int, timeout int) (int, error) {	
-	txBuf = srbuf.Create(256)
-	rxBuf = srbuf.Create(256)
-	// initialize a serial interface to the xbee module
-	serial.Init()
-	serialXBEE, err = serial.Connect(dev, baud, timeout, true)
-	
-	quit = make(chan bool)
-
-	return serialXBEE, err
-}
-
-
-func Begin() {
-	if serialXBEE == -1 {
-		return
-	}
-	
-	_running = true
-	go func() {
-		for {
-			select {
-			case <- quit:
-				break
-			default:
-				processRxData()
-				processTxData()
-				time.Sleep(time.Millisecond*15)
-			}
-		}
-		// if we get here, dispose and exit
-		serial.Disconnect(serialXBEE)
-	}()
-}
-
-func Close() {
-	if !_running && serialXBEE != -1 {
-		serial.Disconnect(serialXBEE)
-	}
-	quit <- true
-}
 
 // Setup for user-defined callback functions
 
@@ -115,98 +70,90 @@ func SetupModemStatusCallback(f ModemStatusCallbackFunc) {
 func SetupReceivePacketCallback(f ReceivePacketCallbackFunc) {
 	receivePacketCallback = f
 }
-
-func processRxData() {
-	var ret bool = false
+func processRxData(rxdat []byte) (mbdate []byte, n int, err error) {
 	var frameType byte
 	var frameId byte
 	var status byte
 	var destinationAddress64 [8]byte
 	var destinationAddress16 [2]byte
+
 	var receiveOptions byte
-	var err error
+	// var err error
 	var d []byte
-	var n int
+	// var n int
 	
 	d = make([]byte, 256)
 	n,err = serial.ReadBytes(serialXBEE, d)
 
 	// cts todo - improve this
-	if err == nil && n > 0 {
-		
-		for i:=0; i<n; i++ {
-			rxBuf.PutByte(d[i])
-			//fmt.Println(fmt.Sprintf("Read:[%02X]", d[i]))
-		}
-	}
 	
-	for !ret {
-		avail := rxBuf.AvailByteCnt()
-		if(avail < 8) { // 8 bytes is minimum for complete packet
-			break
-		}
-		p := rxBuf.PeekBytes(3)
-		if(p[0] != 0x7E) {
-			rxBuf.GetByte() // skip byte, increment buffer
-			continue
-		}
-		n := int(p[1])*256 + int(p[2])
-		if(avail < n+4) { // not all data received yet, break for now
-			break
-		}
-		ret = true
-		// if we get here, packet is ready to parse
-		data := rxBuf.GetBytes(n+4)
-		frameType = data[3]
-		// parse api packet
-		if debug {
-			fmt.Println(fmt.Sprintf( "Rx frame=[%02X]", frameType))
-		}
-		switch frameType { // Frame Type
-			case ATRESPONSE : 
-				frameId, data, err = parseATCommandResponse(data)
-			case MODEMSTATUS : 
-				status, err = parseModemStatusResponse(data)
-			case RECEIVE : 
-				destinationAddress64, destinationAddress16, receiveOptions, data, err = parseReceivePacketResponse(data)
-			default:
-				err = errors.New("Frame Type not supported: [" + hex.Dump(data[3:4]) + "]")
-		}
-		// error handling
-		if(err != nil) {
-			if(errHandler != nil) {
-				errHandler(err)
-			}
-			return
-		}
-		// send parsed data to user callbacks
-		switch frameType { // Frame Type
-			case ATRESPONSE : 
-				if atCommandCallback != nil {
-					atCommandCallback(frameId, data)
-				}
-			case MODEMSTATUS : 
-				if modemStatusCallback != nil {
-					modemStatusCallback(status)
-				}
-			case RECEIVE : 
-				if receivePacketCallback != nil {
-					receivePacketCallback(destinationAddress64, destinationAddress16, receiveOptions, data)
-				}
-		}
+
+	if(len(rxdat) < 8) { // 8 bytes is minimum for complete packet
+		return
 	}
+
+	if(rxdat[0] != 0x7E) {
+		return nil, 0,	err
+	}
+	n = int(rxdat[1])*256 + int(rxdat[2])
+	if(len(rxdat) < n+4) { // not all data received yet, break for now
+		return nil, 0,	err
+	}
+	// if we get here, packet is ready to parse
+	frameType = rxdat[3]
+	data := rxdat
+	// parse api packet
+	if debug {
+		fmt.Println(fmt.Sprintf( "Rx frame=[%02X]", frameType))
+	}
+	switch frameType { // Frame Type
+		case ATRESPONSE : 	 //const ATRESPONSE	= 0x88
+			frameId, data, err = parseATCommandResponse(data)
+		case MODEMSTATUS : 	//const MODEMSTATUS	= 0x8A
+			status, err = parseModemStatusResponse(data)
+		case RECEIVE :
+			destinationAddress64, destinationAddress16, receiveOptions, data, err = parseReceivePacketResponse(data)
+		case EXPLICITRX :
+			destinationAddress64, destinationAddress16, receiveOptions,  data, err = parseExplicitReceivePacketResponse(data)
+	default:
+			err = errors.New("Frame Type not supported: [" + hex.Dump(data[3:4]) + "]")
+	}
+	// error handling
+	if(err != nil) {
+		if(errHandler != nil) {
+			errHandler(err)
+		}
+		return
+	}
+	// send parsed data to user callbacks
+	switch frameType { // Frame Type
+		case ATRESPONSE :
+			if atCommandCallback != nil {
+				atCommandCallback(frameId, data)
+			}
+		case MODEMSTATUS :
+			if modemStatusCallback != nil {
+				modemStatusCallback(status)
+			}
+		case RECEIVE :
+			if receivePacketCallback != nil {
+				receivePacketCallback(destinationAddress64, destinationAddress16, receiveOptions, data)
+			}
+	}
+
+	return
 }
 
-func processTxData() {
-	// send data out of serial (XBEE) port
-	if txBuf.AvailByteCnt() > 0 {
-		data := txBuf.GetBytes(0)
-		serial.SendBytes(serialXBEE, data)
-		if debug {
-			fmt.Println(fmt.Sprintf( "Tx cnt=(%d)", len(data)))
-		}
-	}
-}
+// func processTxData() {
+// 	// send data out of serial (XBEE) port
+// 	if txBuf.AvailByteCnt() > 0 {
+// 		data := txBuf.GetBytes(0)
+// 		serial.SendBytes(serialXBEE, data)
+// 		if debug {
+// 			fmt.Println(fmt.Sprintf( "Tx cnt=(%d)", len(data)))
+// 		}
+// 	}
+// }
 
 /* ***************************************************************
  * SendPacket
@@ -223,8 +170,8 @@ func processTxData() {
  * 17 - n	- RF data payload
  * n+1		- checksum
  * ***************************************************************/
-func SendPacket(address64 []byte, address16 []byte, option byte, data []byte) (d []byte, n int, err error) {
-	d = []byte{0x7E, 0x00, 0x00, TRANSMIT, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+func SendPacket10(address64 []byte, address16 []byte, option byte, data []byte) (d []byte, n int, err error) {
+	d = []byte{0x7E, 0x00, 0x00, TRANSMIT10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 				0xFF, 0xFE, 0x00, 0x00}
 	
 	
@@ -251,11 +198,69 @@ func SendPacket(address64 []byte, address16 []byte, option byte, data []byte) (d
 	d[n-1] = CalcChecksum(d[3:])
 	
 	// cts todo - improve this
-	for i := 0; i<len(d); i++ {
-		txBuf.PutByte(d[i])
-	}
+	// for i := 0; i<len(d); i++ {
+	// 	txBuf.PutByte(d[i])
+	// }
 
 	return
+}
+
+/* ***************************************************************
+ * SendPacket
+ * Send data packet as an RF packet to the specified destination
+ *
+ * 0		- Start Delimiter
+ * 1-2		- Length
+ * 3		- Frame Type (0x10)
+ * 4		- Frame ID
+ * 5 - 12	- 64-bit address MSB-LSB
+ * 13 - 14	- 16-bit address MSB-LSB
+ * 15		- uint8_t s_endp; 	//OxE8  //15
+ * 16		- uint8_t d_endp; 	//0xE8  //16
+ * 17		- uint8_t c_id_h;	//00    //17
+ * 18		- uint8_t c_id_l;	//11    //18
+ * 19		- uint8_t p_id_h;  	//18    //19
+ * 20		- uint8_t p_id_l; 	//57    //20
+ * 21		- broadcast radius
+ * 22		- options
+ * 23 - n	- RF data payload
+ * n+1		- checksum
+ * ***************************************************************/
+func SendPacket11(address64 []byte, address16 []byte, option byte, data []byte) (d []byte, n int, err error) {
+	d = []byte{0x7E, 0x00, 0x00, TRANSMIT11, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF,
+				0xFF, 0xFE,
+				0xE8, 0xE8, 0x00, 0x11, 0x18, 0x57,
+				0x00, 0x00}
+
+
+	if len(address64) != 8 {
+		return d, 0, errors.New("Incorrect Address Length")
+	}
+	// 64-bit address
+	copy(d[5:13], address64)
+
+	if address16 != nil && len(address16) == 2 {
+		copy(d[13:15], address16)
+	}
+
+	d[16] = option
+
+	d = append(d[:], data[:]...)
+	d = append(d[:], 0x00)
+
+	n = len(d)
+	d[1] = byte((n-4) / 0x100)
+	d[2] = byte((n-4) % 0x100)
+
+	d[n-1] = CalcChecksum(d[3:])
+
+	// cts todo - improve this
+	// for i := 0; i<len(d); i++ {
+	// 	txBuf.PutByte(d[i])
+	// }
+
+	return d, len(d),nil
 }
 
 /* ***************************************************************
@@ -294,11 +299,11 @@ func SendATCommand(command []byte, param []byte) (d []byte, n int, err error) {
 	d[n-1] = CalcChecksum(d[3:])
 	
 	// cts todo - improve this
-	for i := 0; i<len(d); i++ {
-		txBuf.PutByte(d[i])
-	}
+	// for i := 0; i<len(d); i++ {
+	// 	txBuf.PutByte(d[i])
+	// }
 
-	return
+	return d, len(d),nil
 }
 
 func CalcChecksum(data []byte)(byte) {
@@ -397,7 +402,6 @@ func parseModemStatusResponse(r []byte) (status byte, err error) {
  *			status byte
  * Output:
  *			description string
- *
  * ***************************************************************/
 func GetModemStatusDescription(status byte) (description string) {
 	switch {
@@ -646,7 +650,7 @@ func GetReceiveOptionDescription(status byte) (description string) {
  *
  * 0		- Start Delimiter
  * 1-2		- Length
- * 3		- Frame Type (0x90)
+ * 3		- Frame Type (0x91)
  * 4 - 11   - 64-bit address of sender (MSB - LSB)
  * 12 - 13	- 16-bit address of sender
  * 14		- Source Endpoint
@@ -657,46 +661,82 @@ func GetReceiveOptionDescription(status byte) (description string) {
  * 21 - n	- Received data
  * n+1		- checksum
  * ***************************************************************/
+// func parseExplicitReceivePacketResponse(r []byte) (destinationAddress64 [8]byte, destinationAddress16 [2]byte,
+// 													sourceEndpoint byte, destinationEndpoint byte,
+// 													clusterId [2]byte, profileId [2]byte,
+// 													receiveOptions byte, receivedData []byte, err error) {
+// 	sourceEndpoint = 0
+// 	destinationEndpoint = 0
+// 	receiveOptions = 0
+// 	receivedData = nil
+// 	err = nil
+//
+// 	if(r[3] != EXPLICITRX) {
+// 		err = errors.New("Invalid Frame Type")
+// 		return
+// 	}
+//
+// 	n := int(r[1])*256 + int(r[2])
+//
+// 	if(n != len(r) - 4) {
+// 		err = errors.New("Frame Length Error: " + fmt.Sprintf("%d, %d", n, len(r)-4))
+// 		return
+// 	}
+//
+// 	check := CalcChecksum(r[3:n+3])
+// 	if(check != r[n+3]) {
+// 		err = errors.New(fmt.Sprintf( "Checksum Error: calc=[%02X] read=[%02X]", check, r[n+3]))
+// 		return
+// 	}
+//
+// 	// prepare return data
+// 	copy(destinationAddress64[:], r[4:12])
+// 	copy(destinationAddress16[:], r[12:14])
+// 	sourceEndpoint = r[14]
+// 	destinationEndpoint = r[15]
+// 	copy(clusterId[:], r[16:18])
+// 	copy(profileId[:], r[18:20])
+// 	receiveOptions = r[20]
+//
+// 	if(n > 18) {
+// 		receivedData = r[21:3+n] // 21:21+n-18
+// 	}
+//
+// 	return
+// }
+
 func parseExplicitReceivePacketResponse(r []byte) (destinationAddress64 [8]byte, destinationAddress16 [2]byte,
-													sourceEndpoint byte, destinationEndpoint byte,
-													clusterId [2]byte, profileId [2]byte,
-													receiveOptions byte, receivedData []byte, err error) {
-	sourceEndpoint = 0
-	destinationEndpoint = 0
+	receiveOptions byte, receivedData []byte, err error) {
 	receiveOptions = 0
 	receivedData = nil
 	err = nil
-	
+
 	if(r[3] != EXPLICITRX) {
-		err = errors.New("Invalid Frame Type") 
+		err = errors.New("Invalid Frame Type")
 		return
 	}
-	
+
 	n := int(r[1])*256 + int(r[2])
-	
+
 	if(n != len(r) - 4) {
-		err = errors.New("Frame Length Error: " + fmt.Sprintf("%d, %d", n, len(r)-4)) 
+		err = errors.New("Frame Length Error: " + fmt.Sprintf("%d, %d", n, len(r)-4))
 		return
 	}
-	
+
 	check := CalcChecksum(r[3:n+3])
 	if(check != r[n+3]) {
 		err = errors.New(fmt.Sprintf( "Checksum Error: calc=[%02X] read=[%02X]", check, r[n+3]))
 		return
 	}
-	
+
 	// prepare return data
 	copy(destinationAddress64[:], r[4:12])
 	copy(destinationAddress16[:], r[12:14])
-	sourceEndpoint = r[14]
-	destinationEndpoint = r[15]
-	copy(clusterId[:], r[16:18])
-	copy(profileId[:], r[18:20])
 	receiveOptions = r[20]
-	
+
 	if(n > 18) {
 		receivedData = r[21:3+n] // 21:21+n-18
-	} 
-	
+	}
+
 	return
 }
